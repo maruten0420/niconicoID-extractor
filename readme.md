@@ -1,43 +1,76 @@
-niconicoID-extractor
+# 📊 niconicoID-extractor
 
-Googleフォームの回答CSVからニコニコ動画・YouTubeの情報を集計し、ランキングを作成するツールです。
+Googleフォームの回答CSVからニコニコ動画・YouTubeの情報を集計し、自動でランキングを作成するWebツールです。
 
-使い方
+## ✨ 主な機能
 
-Googleフォームから回答をCSV形式で書き出す。
+- 🔗 マイリスト一括解析: ニコニコ動画のマイリストURLを解析し、中身の動画を自動で展開します。
 
-本ツールにCSVをアップロードする。
+- 📅 投稿日時取得:
 
-列番号（回答者名:B, マイリスト:D, 外部リンク:E）に基づき自動集計されます。
+  - ニコニコ動画: 秒単位までの正確な投稿日時を表示。
 
-セットアップとデプロイ
+  - YouTube: 年月日を表示。
+
+- ⚠️ バリデーション機能: 1人あたりの選出数が10作品でない場合に警告を表示。
+
+- 🔞 堅牢な抽出: 年齢制限などで情報が取得できない動画も、IDを強制抽出して集計対象に含めます。
+
+- 📥 CSVエクスポート: 集計結果をExcel等で読み込めるCSV形式（UTF-8/BOM付き）でダウンロード可能。
+
+## 🚀 使い方
+
+フォーム回答の準備 Googleフォームの回答をCSV形式で書き出します。
+
+アプリにアップロード 本ツールを起動し、CSVファイルをアップロードしてください。
+
+集計の実行 [ランキングを作成する] ボタンをクリック。
+以下の列構成（デフォルト）に基づいて自動集計が行われます：
+
+  - B列: 回答者名
+
+  - D列: ニコニコ動画マイリストURL
+
+  - E列: 外部リンク（YouTube / その他）
+
+結果の確認と保存 画面上に表示されるランキングを確認し、必要に応じてCSVファイルをダウンロードします。
+
+## 🛠 セットアップとデプロイ
 
 1. 必要なファイル
 
 GitHubリポジトリには以下のファイルが必要です。
 
-app.py: アプリ本体
+  - app.py: アプリ本体のプログラム
 
-requirements.txt: 依存ライブラリのリスト（各パッケージを改行して記述）
+  - requirements.txt: 動作に必要なライブラリ
 
 2. Streamlit Cloud へのデプロイ
 
-Streamlit Cloud にログイン。
+  - Streamlit Cloud にログイン。
 
-New app からこのリポジトリを選択。
+  - New app からこのリポジトリを選択。
 
-Main file path を app.py に設定してデプロイ。
+  - Main file path を app.py に設定してデプロイを実行。
 
-技術スタック
+## 📦 技術スタック
 
-Python
+- Language: Python
 
-Streamlit
+- UI Framework: Streamlit
 
-yt-dlp (動画情報取得用)
+- Data Engine: Pandas
 
-トラブルシューティング
+- Extractor: yt-dlp (YouTube/Niconico metadata)
 
-Error during processing dependencies!: requirements.txt の中身が1行ずつに分かれているか確認してください。
+- API: ニコニコ動画 外部API (getthumbinfo)
 
-取得不可と表示される: 動画が削除されているか、非公開マイリストである可能性があります。
+## 📝 注意事項・トラブルシューティング
+
+- API料金: 本ツールの利用において料金が発生することはありません。
+
+- 取得不可: 動画が削除されているか、非公開設定の場合はタイトルが [取得不可] となります。
+
+- 依存関係エラー: Streamlit Cloudでエラーが出る場合は、requirements.txt が1行1パッケージの形式で記述されているか確認してください。
+
+Produced by Gemini
