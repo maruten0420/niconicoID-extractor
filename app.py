@@ -25,7 +25,7 @@ def get_nico_metadata_api(video_id):
                 thumb = root.find('thumb')
                 # 投稿日時 (2024-01-01T00:00:00+09:00 形式)
                 raw_date = thumb.find('first_retrieve').text
-                # YYYY-MM-DD HH:MM:SS 形式に整形
+                # ニコニコ動画は時分秒まで保持 (YYYY-MM-DD HH:MM:SS)
                 dt = datetime.fromisoformat(raw_date)
                 return {
                     'video_id': video_id,
@@ -66,7 +66,7 @@ def get_video_metadata(url):
                     if entry:
                         v_id = entry.get('id')
                         # マイリスト内の各動画についてもニコニコならAPIを試みる
-                        if v_id and (v_id.startswith('sm') or v_id.startswith('so')):
+                        if v_id and (v_id.startswith('sm') or v_id.startswith('so') or v_id.startswith('nm')):
                             nico_data = get_nico_metadata_api(v_id)
                             if nico_data:
                                 videos.append(nico_data)
@@ -77,7 +77,7 @@ def get_video_metadata(url):
                             'title': entry.get('title') or "[タイトル取得不可]",
                             'uploader': entry.get('uploader') or entry.get('channel') or "[投稿者不明]",
                             'upload_date': format_date(entry.get('upload_date')),
-                            'url': entry.get('url') or f"https://www.nicovideo.jp/watch/{v_id}"
+                            'url': entry.get('url') or (f"https://www.nicovideo.jp/watch/{v_id}" if v_id else url)
                         })
                 return videos
             else:
@@ -92,14 +92,15 @@ def get_video_metadata(url):
         return None
 
 def format_date(date_str):
-    """YYYYMMDD 形式を YYYY-MM-DD HH:MM:SS に変換"""
+    """YYYYMMDD 形式を YYYY-MM-DD に変換（主にYouTube用）"""
     if not date_str or not isinstance(date_str, str):
         return "[不明]"
     try:
-        # yyyymmdd 形式
+        # yt-dlpから返ってくる yyyymmdd 形式を想定
         if len(date_str) == 8:
             dt = datetime.strptime(date_str, '%Y%m%d')
-            return dt.strftime('%Y-%m-%d %H:%M:%S')
+            # YouTube等は年月日のみ
+            return dt.strftime('%Y-%m-%d')
     except:
         pass
     return date_str
@@ -114,6 +115,7 @@ def process_data(df):
     total_rows = len(df)
 
     for i, row in df.iterrows():
+        # Googleフォームの列構成 B:回答者(1), D:マイリスト(3), E:リンク(4)
         respondent = str(row.iloc[1]) if len(row) > 1 else "匿名"
         mylist_url = str(row.iloc[3]) if len(row) > 3 else ""
         ext_url = str(row.iloc[4]) if len(row) > 4 else ""
@@ -126,7 +128,7 @@ def process_data(df):
             else:
                 results = get_video_metadata(url)
                 video_meta_cache[url] = results
-                time.sleep(0.05) # API負荷軽減（ニコニコAPIは軽量なので短めでOK）
+                time.sleep(0.05) 
 
             if results:
                 for v in results:
@@ -166,6 +168,11 @@ def process_data(df):
 
 # --- UI ---
 st.title("📊 動画選出集計・ランキングツール")
+st.markdown("""
+- **ニコニコ動画**: 投稿日時（秒まで）を表示します。
+- **YouTube**: 投稿日（年月日のみ）を表示します。
+""")
+
 uploaded_file = st.file_uploader("CSVファイルをアップロード", type=['csv'])
 
 if uploaded_file:
