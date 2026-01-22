@@ -13,8 +13,6 @@ st.set_page_config(page_title="動画選出集計ツール", layout="wide")
 
 # --- 定数・正規表現 ---
 NICO_ID_RE = re.compile(r'(sm\d+|so\d+|nm\d+)')
-# YouTubeのIDをURLから直接抜くための正規表現
-YT_ID_RE = re.compile(r'(?:v=|\/v\/|embed\/|youtu\.be\/|\/shorts\/)([a-zA-Z0-9_-]{11})')
 
 def get_nico_metadata_api(video_id):
     """ニコニコ動画の公式外部API(getthumbinfo)から情報を取得する"""
@@ -38,30 +36,14 @@ def get_nico_metadata_api(video_id):
         pass
     return None
 
-def extract_id_manually(url):
-    """APIやyt-dlpが失敗した場合に、URLから強引にIDを抜き出す"""
-    # ニコニコチェック
-    nico = NICO_ID_RE.findall(url)
-    if nico:
-        return nico[0], "Niconico"
-    # YouTubeチェック
-    yt = YT_ID_RE.findall(url)
-    if yt:
-        return yt[0], "YouTube"
-    return None, None
-
 def get_video_metadata(url):
-    """yt-dlpを使用して情報を取得し、失敗時は強引にIDだけ抜く"""
-    url_str = str(url).strip()
-    
-    # ニコニコの場合はまず専用APIを叩く
-    nico_ids = NICO_ID_RE.findall(url_str)
+    """yt-dlpを使用して情報を取得し、ニコニコの場合は専用APIで補完する"""
+    nico_ids = NICO_ID_RE.findall(url)
     if nico_ids:
         data = get_nico_metadata_api(nico_ids[0])
         if data:
             return [data]
 
-    # yt-dlp 試行
     ydl_opts = {
         'quiet': True,
         'no_warnings': True,
@@ -71,14 +53,13 @@ def get_video_metadata(url):
     
     try:
         with yt_dlp.YoutubeDL(ydl_opts) as ydl:
-            info = ydl.extract_info(url_str, download=False)
+            info = ydl.extract_info(url, download=False)
             
             if 'entries' in info:
                 videos = []
                 for entry in info['entries']:
                     if entry:
                         v_id = entry.get('id')
-                        # ニコニコならAPI優先
                         if v_id and (v_id.startswith('sm') or v_id.startswith('so') or v_id.startswith('nm')):
                             nico_data = get_nico_metadata_api(v_id)
                             if nico_data:
@@ -90,7 +71,7 @@ def get_video_metadata(url):
                             'title': entry.get('title') or "[タイトル取得不可]",
                             'uploader': entry.get('uploader') or entry.get('channel') or "[投稿者不明]",
                             'upload_date': format_date(entry.get('upload_date')),
-                            'url': entry.get('url') or (f"https://www.nicovideo.jp/watch/{v_id}" if v_id else url_str)
+                            'url': entry.get('url') or (f"https://www.nicovideo.jp/watch/{v_id}" if v_id else url)
                         })
                 return videos
             else:
@@ -99,23 +80,13 @@ def get_video_metadata(url):
                     'title': info.get('title') or "[タイトル取得不可]",
                     'uploader': info.get('uploader') or info.get('channel') or "[投稿者不明]",
                     'upload_date': format_date(info.get('upload_date')),
-                    'url': url_str
+                    'url': url
                 }]
     except Exception:
-        # 年齢制限などでエラーが出た場合の最終手段
-        v_id, platform = extract_id_manually(url_str)
-        if v_id:
-            return [{
-                'video_id': v_id,
-                'title': f"[{platform} 年齢制限等により情報取得不可]",
-                'uploader': "[取得不可]",
-                'upload_date': "[取得不可]",
-                'url': url_str
-            }]
         return None
 
 def format_date(date_str):
-    """YYYYMMDD 形式を YYYY-MM-DD に変換"""
+    """YYYYMMDD 形式を YYYY-MM-DD に変換（主にYouTube用）"""
     if not date_str or not isinstance(date_str, str):
         return "[不明]"
     try:
@@ -130,31 +101,21 @@ def process_data(df):
     """CSV全体をスキャンしてランキングデータを作成"""
     all_votes = []
     video_meta_cache = {} 
-    respondent_counts = {} 
     
     progress_text = "動画情報を解析中..."
     progress_bar = st.progress(0, text=progress_text)
     total_rows = len(df)
 
-    if total_rows == 0:
-        return None, []
-
     for i, row in df.iterrows():
+        # 安全に値を取得
         try:
             respondent = str(row.iloc[1]) if len(row) > 1 else "匿名"
             mylist_url = str(row.iloc[3]) if len(row) > 3 else ""
             ext_url = str(row.iloc[4]) if len(row) > 4 else ""
-            
-            if respondent == 'nan': respondent = f"匿名_{i}"
-            mylist_url = "" if mylist_url == 'nan' else mylist_url
-            ext_url = "" if ext_url == 'nan' else ext_url
         except Exception:
             continue
 
-        if respondent not in respondent_counts:
-            respondent_counts[respondent] = 0
-
-        urls_to_process = [u.strip() for u in [mylist_url, ext_url] if u.strip()]
+        urls_to_process = [u.strip() for u in [mylist_url, ext_url] if u.strip() and str(u).lower() != 'nan']
         
         for url in urls_to_process:
             if url in video_meta_cache:
@@ -173,23 +134,22 @@ def process_data(df):
                         'upload_date': v['upload_date'],
                         'respondent': respondent
                     })
-                    respondent_counts[respondent] += 1
             else:
-                # それでもダメな場合、URLそのものをIDとして無理やり1票入れる
-                all_votes.append({
-                    'video_id': url, 'title': "[完全に情報取得不可]", 'uploader': "[不明]",
-                    'upload_date': "[不明]", 'respondent': respondent
-                })
-                respondent_counts[respondent] += 1
+                # 取得不可の場合のフォールバック
+                nico_ids = NICO_ID_RE.findall(url)
+                if nico_ids:
+                    for n_id in nico_ids:
+                        all_votes.append({
+                            'video_id': n_id, 'title': "[取得不可]", 'uploader': "[取得不可]",
+                            'upload_date': "[取得不可]", 'respondent': respondent
+                        })
 
         progress_bar.progress((i + 1) / total_rows, text=f"{progress_text} ({i+1}/{total_rows}行目)")
 
-    if not all_votes: 
-        return None, []
+    if not all_votes: return None
 
-    invalid_respondents = [name for name, count in respondent_counts.items() if count != 10]
     votes_df = pd.DataFrame(all_votes)
-
+    # 集計処理
     ranking = votes_df.groupby('video_id').agg({
         'title': 'first',
         'upload_date': 'first',
@@ -202,12 +162,16 @@ def process_data(df):
     ranking['順位(被りなし)'] = range(1, len(ranking) + 1)
     ranking['順位(被りあり)'] = ranking['count'].rank(ascending=False, method='min').astype(int)
     
-    return ranking, invalid_respondents
+    return ranking
 
 # --- UI ---
 st.title("📊 動画選出集計・ランキングツール")
+st.markdown("""
+- **ニコニコ動画**: 投稿日時（秒まで）を表示します。
+- **YouTube**: 投稿日（年月日のみ）を表示します。
+""")
 
-uploaded_file = st.file_uploader("Googleフォームの回答CSVをアップロード", type=['csv'])
+uploaded_file = st.file_uploader("CSVファイルをアップロード", type=['csv'])
 
 if uploaded_file:
     content = uploaded_file.read()
@@ -216,21 +180,23 @@ if uploaded_file:
     except:
         df_input = pd.read_csv(io.BytesIO(content), encoding='shift-jis')
 
-    st.write(f"📋 読み込み完了: {len(df_input)} 行の回答があります。")
+    st.write("📋 入力CSVプレビュー (5件)")
+    st.dataframe(df_input.head())
 
     if st.button("🚀 ランキングを作成する"):
         try:
-            with st.spinner("データを処理しています... (年齢制限動画等はIDのみ抽出します)"):
-                result_df, invalid_respondents = process_data(df_input)
+            result_df = process_data(df_input)
             
             if result_df is not None and not result_df.empty:
-                if invalid_respondents:
-                    st.warning(f"⚠️ 次の方は選出動画が10作品ではありません（現在 {len(invalid_respondents)} 名）:\n\n{', '.join(invalid_respondents)}")
-
+                # 選出者リストを展開
                 voter_lists = result_df['respondent'].tolist()
-                voters_df = pd.DataFrame(voter_lists, index=result_df.index).fillna("")
+                max_voters = max([len(v) for v in voter_lists]) if voter_lists else 0
+                
+                # 選出者データをデータフレーム化
+                voters_df = pd.DataFrame(voter_lists, index=result_df.index)
                 voters_df.columns = [f"選出者{i+1}" for i in range(voters_df.shape[1])]
 
+                # 最終的な出力を結合
                 final_output = pd.concat([
                     result_df[['順位(被りなし)', '順位(被りあり)', 'title', 'video_id', 'upload_date', 'uploader']],
                     voters_df
@@ -240,18 +206,17 @@ if uploaded_file:
                     'title': '動画タイトル', 'video_id': '動画ID', 'upload_date': '投稿日時', 'uploader': '投稿者'
                 })
 
-                st.success(f"✅ 集計が完了しました。")
-                st.subheader("🏆 集計結果ランキング")
-                st.dataframe(final_output, use_container_width=True)
+                st.success(f"集計完了: {len(final_output)}件の動画が見つかりました。")
                 
+                # 画面表示
+                st.subheader("🏆 集計結果ランキング")
+                st.dataframe(final_output)
+                
+                # CSVダウンロード
                 csv_data = final_output.to_csv(index=False, encoding='utf-8-sig')
-                st.download_button(
-                    label="📥 CSVでダウンロード",
-                    data=csv_data,
-                    file_name=f"ranking_{datetime.now().strftime('%Y%m%d_%H%M%S')}.csv",
-                    mime='text/csv'
-                )
+                st.download_button(label="📥 CSVダウンロード", data=csv_data, file_name=f"ranking_{datetime.now().strftime('%Y%m%d_%H%M%S')}.csv", mime='text/csv')
             else:
-                st.error("❌ 動画情報が抽出できませんでした。")
+                st.warning("動画情報が見つかりませんでした。CSVの列（B:回答者, D:マイリスト, E:リンク）が正しいか確認してください。")
         except Exception as e:
-            st.error(f"💥 エラーが発生しました: {str(e)}")
+            st.error(f"プログラム実行中にエラーが発生しました: {e}")
+            st.info("CSVの形式や列の並びが想定と異なっている可能性があります。")
