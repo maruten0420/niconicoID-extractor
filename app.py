@@ -101,19 +101,22 @@ def process_data(df):
     """CSV全体をスキャンしてランキングデータを作成"""
     all_votes = []
     video_meta_cache = {} 
+    respondent_counts = {} # 回答者ごとの選出数を記録
     
     progress_text = "動画情報を解析中..."
     progress_bar = st.progress(0, text=progress_text)
     total_rows = len(df)
 
     for i, row in df.iterrows():
-        # 安全に値を取得
         try:
             respondent = str(row.iloc[1]) if len(row) > 1 else "匿名"
             mylist_url = str(row.iloc[3]) if len(row) > 3 else ""
             ext_url = str(row.iloc[4]) if len(row) > 4 else ""
         except Exception:
             continue
+
+        if respondent not in respondent_counts:
+            respondent_counts[respondent] = 0
 
         urls_to_process = [u.strip() for u in [mylist_url, ext_url] if u.strip() and str(u).lower() != 'nan']
         
@@ -134,6 +137,7 @@ def process_data(df):
                         'upload_date': v['upload_date'],
                         'respondent': respondent
                     })
+                    respondent_counts[respondent] += 1
             else:
                 # 取得不可の場合のフォールバック
                 nico_ids = NICO_ID_RE.findall(url)
@@ -143,13 +147,16 @@ def process_data(df):
                             'video_id': n_id, 'title': "[取得不可]", 'uploader': "[取得不可]",
                             'upload_date': "[取得不可]", 'respondent': respondent
                         })
+                        respondent_counts[respondent] += 1
 
         progress_bar.progress((i + 1) / total_rows, text=f"{progress_text} ({i+1}/{total_rows}行目)")
 
-    if not all_votes: return None
+    if not all_votes: return None, []
+
+    # 選出数が10でないユーザーを抽出
+    invalid_respondents = [name for name, count in respondent_counts.items() if count != 10]
 
     votes_df = pd.DataFrame(all_votes)
-    # 集計処理
     ranking = votes_df.groupby('video_id').agg({
         'title': 'first',
         'upload_date': 'first',
@@ -162,7 +169,7 @@ def process_data(df):
     ranking['順位(被りなし)'] = range(1, len(ranking) + 1)
     ranking['順位(被りあり)'] = ranking['count'].rank(ascending=False, method='min').astype(int)
     
-    return ranking
+    return ranking, invalid_respondents
 
 # --- UI ---
 st.title("📊 動画選出集計・ランキングツール")
@@ -185,18 +192,20 @@ if uploaded_file:
 
     if st.button("🚀 ランキングを作成する"):
         try:
-            result_df = process_data(df_input)
+            result_df, invalid_respondents = process_data(df_input)
             
             if result_df is not None and not result_df.empty:
+                # --- 警告の表示 ---
+                if invalid_respondents:
+                    st.warning(f"次の方は動画が10作品ではありません。\n\n{', '.join(invalid_respondents)}")
+
                 # 選出者リストを展開
                 voter_lists = result_df['respondent'].tolist()
                 max_voters = max([len(v) for v in voter_lists]) if voter_lists else 0
                 
-                # 選出者データをデータフレーム化
                 voters_df = pd.DataFrame(voter_lists, index=result_df.index)
                 voters_df.columns = [f"選出者{i+1}" for i in range(voters_df.shape[1])]
 
-                # 最終的な出力を結合
                 final_output = pd.concat([
                     result_df[['順位(被りなし)', '順位(被りあり)', 'title', 'video_id', 'upload_date', 'uploader']],
                     voters_df
@@ -216,7 +225,6 @@ if uploaded_file:
                 csv_data = final_output.to_csv(index=False, encoding='utf-8-sig')
                 st.download_button(label="📥 CSVダウンロード", data=csv_data, file_name=f"ranking_{datetime.now().strftime('%Y%m%d_%H%M%S')}.csv", mime='text/csv')
             else:
-                st.warning("動画情報が見つかりませんでした。CSVの列（B:回答者, D:マイリスト, E:リンク）が正しいか確認してください。")
+                st.warning("動画情報が見つかりませんでした。")
         except Exception as e:
             st.error(f"プログラム実行中にエラーが発生しました: {e}")
-            st.info("CSVの形式や列の並びが想定と異なっている可能性があります。")
