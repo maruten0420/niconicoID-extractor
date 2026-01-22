@@ -1,1 +1,3 @@
-streamlit pandas yt-dlp
+streamlit 
+pandas 
+yt-dlp
