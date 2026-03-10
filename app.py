@@ -7,6 +7,7 @@ import yt_dlp
 import io
 import requests
 import xml.etree.ElementTree as ET
+import html
 
 # --- ページ設定 ---
 st.set_page_config(page_title="動画選出集計ツール", layout="wide")
@@ -54,6 +55,58 @@ def get_nico_metadata_api(video_id):
         pass
     return None
 
+def get_nico_mylist_metadata(mylist_url):
+    """ニコニコ動画のマイリストRSSから動画一覧とマイリストコメントを取得する"""
+    match = re.search(r'mylist/(\d+)', mylist_url)
+    if not match:
+        return None
+    mylist_id = match.group(1)
+    
+    url = f"https://www.nicovideo.jp/mylist/{mylist_id}?rss=2.0"
+    videos = []
+    try:
+        response = requests.get(url, timeout=10)
+        if response.status_code == 200:
+            root = ET.fromstring(response.text)
+            for item in root.findall('.//item'):
+                link = item.find('link').text
+                v_id = link.split('?')[0].split('/')[-1] if link else None
+                if not v_id: continue
+                
+                desc_html = item.find('description').text or ""
+                # RSSのdescriptionからニコニコのマイリストメモ(<p class="nico-memo">)だけを抽出
+                memo_match = re.search(r'<p class="nico-memo">([\s\S]*?)</p>', desc_html)
+                if memo_match:
+                    memo_html = memo_match.group(1)
+                    # 改行タグをスペースに変換し、その他のHTMLタグを除去
+                    memo_html = re.sub(r'<br\s*/?>', ' ', memo_html)
+                    memo = re.sub(r'<[^>]+>', '', memo_html).strip()
+                    memo = html.unescape(memo)
+                else:
+                    memo = ""
+                
+                # 詳細情報をAPIから取得
+                nico_data = get_nico_metadata_api(v_id)
+                if nico_data:
+                    nico_data['mylist_comment'] = memo
+                    videos.append(nico_data)
+                else:
+                    title = item.find('title').text if item.find('title') is not None else "[タイトル取得不可]"
+                    videos.append({
+                        'video_id': v_id,
+                        'title': title,
+                        'uploader': "[不明]",
+                        'upload_date': "[不明]",
+                        'duration': "[不明]",
+                        'mylist_comment': memo,
+                        'url': link
+                    })
+                time.sleep(0.05)
+            return videos
+    except Exception:
+        pass
+    return None
+
 def extract_id_manually(url):
     """URLから強引にIDを抜き出す"""
     nico = NICO_ID_RE.findall(url)
@@ -71,14 +124,10 @@ def extract_urls_from_text(text):
     
     text_str = str(text)
     
-    # 文章中のURLを抽出 (http/httpsから始まり、空白や改行や"<>などまで)
     urls = re.findall(r'https?://[^\s<>"]+', text_str)
-    
-    # URLにはなっていないが、smXXXXなどID単体で書かれている場合の抽出
     nicos = NICO_ID_RE.findall(text_str)
     
     result = []
-    # 重複排除しつつ追加
     for url in urls:
         if url not in result:
             result.append(url)
@@ -86,26 +135,33 @@ def extract_urls_from_text(text):
     joined_urls = " ".join(result)
     for n_id in nicos:
         if n_id not in joined_urls:
-            # URLに含まれていないID単体があれば補完して追加
             result.append(f"https://www.nicovideo.jp/watch/{n_id}")
             
     return result
 
 def get_video_metadata(url):
-    """yt-dlpを使用して情報を取得"""
+    """情報取得のメイン制御"""
     url_str = str(url).strip()
     
-    # そもそもURLっぽくないものはスキップ
+    # URLっぽくないものはスキップ
     if not url_str.startswith('http') and not NICO_ID_RE.search(url_str):
         return None
 
-    # ニコニコ単体動画チェック
+    # ニコニコマイリストの場合はRSS解析処理へ（ここでマイリストコメントを取得）
+    if "nicovideo.jp/mylist/" in url_str:
+        mylist_data = get_nico_mylist_metadata(url_str)
+        if mylist_data is not None:
+            return mylist_data
+
+    # ニコニコ単体動画の場合（マイリストコメントは存在しない）
     nico_ids = NICO_ID_RE.findall(url_str)
     if nico_ids and "mylist" not in url_str:
         data = get_nico_metadata_api(nico_ids[0])
         if data:
+            data['mylist_comment'] = ""
             return [data]
 
+    # YouTube等の場合は yt-dlp を使用
     ydl_opts = {
         'quiet': True,
         'no_warnings': True,
@@ -122,14 +178,11 @@ def get_video_metadata(url):
                 for entry in info['entries']:
                     if entry:
                         v_id = entry.get('id')
-                        # マイリストコメントは entry.get('description') に入ることがある
-                        comment = entry.get('description') or ""
-                        
-                        # ニコニコならAPI優先
+                        # yt-dlpからの概要欄はマイリストコメントとは違うため空にする
                         if v_id and (v_id.startswith('sm') or v_id.startswith('so') or v_id.startswith('nm')):
                             nico_data = get_nico_metadata_api(v_id)
                             if nico_data:
-                                nico_data['mylist_comment'] = comment
+                                nico_data['mylist_comment'] = ""
                                 videos.append(nico_data)
                                 continue
                         
@@ -139,7 +192,7 @@ def get_video_metadata(url):
                             'uploader': entry.get('uploader') or entry.get('channel') or "[投稿者不明]",
                             'upload_date': format_yt_date(entry.get('upload_date')),
                             'duration': format_duration(entry.get('duration')),
-                            'mylist_comment': comment,
+                            'mylist_comment': "",
                             'url': entry.get('url') or url_str
                         })
                 return videos
@@ -179,7 +232,6 @@ def format_yt_date(date_str):
     return date_str
 
 def process_data(df):
-    """CSV全体をスキャンしてランキングデータを作成"""
     all_votes = []
     video_meta_cache = {} 
     respondent_counts = {} 
@@ -190,7 +242,6 @@ def process_data(df):
 
     for i, row in df.iterrows():
         try:
-            # 列名で安全に取得。存在しない場合はインデックスをフォールバックに。
             if '回答者名' in df.columns:
                 respondent = str(row['回答者名'])
             else:
@@ -213,12 +264,10 @@ def process_data(df):
         if respondent not in respondent_counts:
             respondent_counts[respondent] = 0
 
-        # 文章中からURLをすべて抽出（万が一マイリスト欄に文章が書かれても対応できる）
         urls_to_process = []
         urls_to_process.extend(extract_urls_from_text(mylist_url))
         urls_to_process.extend(extract_urls_from_text(ext_text))
         
-        # URLの重複を排除
         urls_to_process = list(dict.fromkeys(urls_to_process))
         
         for url in urls_to_process:
@@ -249,14 +298,13 @@ def process_data(df):
     invalid_respondents = [name for name, count in respondent_counts.items() if count != 10]
     votes_df = pd.DataFrame(all_votes)
 
-    # 集計
     ranking = votes_df.groupby('video_id').agg({
         'title': 'first',
         'upload_date': 'first',
         'uploader': 'first',
         'duration': 'first',
         'respondent': lambda x: sorted(list(set(x))),
-        'comment': lambda x: " / ".join(filter(None, set(x))) # コメントを結合
+        'comment': lambda x: " / ".join(filter(None, set(x))) 
     }).reset_index()
 
     ranking['得票数'] = ranking['respondent'].apply(len)
@@ -289,7 +337,6 @@ if uploaded_file:
                 if invalid_respondents:
                     st.warning(f"⚠️ 10作品ではない方: {', '.join(invalid_respondents)}")
 
-                # 表示用整理
                 final_output = result_df.copy()
                 final_output['選出者一覧'] = final_output['respondent'].apply(lambda x: ", ".join(x))
                 
