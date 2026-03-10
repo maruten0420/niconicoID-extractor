@@ -64,11 +64,38 @@ def extract_id_manually(url):
         return yt[0], "YouTube"
     return None, None
 
+def extract_urls_from_text(text):
+    """自由記入欄などのテキストから複数のURLやIDを安全に抽出する"""
+    if pd.isna(text) or not str(text).strip() or str(text).lower() == 'nan':
+        return []
+    
+    text_str = str(text)
+    
+    # 文章中のURLを抽出 (http/httpsから始まり、空白や改行や"<>などまで)
+    urls = re.findall(r'https?://[^\s<>"]+', text_str)
+    
+    # URLにはなっていないが、smXXXXなどID単体で書かれている場合の抽出
+    nicos = NICO_ID_RE.findall(text_str)
+    
+    result = []
+    # 重複排除しつつ追加
+    for url in urls:
+        if url not in result:
+            result.append(url)
+            
+    joined_urls = " ".join(result)
+    for n_id in nicos:
+        if n_id not in joined_urls:
+            # URLに含まれていないID単体があれば補完して追加
+            result.append(f"https://www.nicovideo.jp/watch/{n_id}")
+            
+    return result
+
 def get_video_metadata(url):
     """yt-dlpを使用して情報を取得"""
     url_str = str(url).strip()
     
-    # そもそもURLっぽくないもの（SNS IDなど）はスキップ
+    # そもそもURLっぽくないものはスキップ
     if not url_str.startswith('http') and not NICO_ID_RE.search(url_str):
         return None
 
@@ -163,10 +190,22 @@ def process_data(df):
 
     for i, row in df.iterrows():
         try:
-            respondent = str(row.iloc[1]) if len(row) > 1 else "匿名"
-            mylist_url = str(row.iloc[3]) if len(row) > 3 else ""
-            ext_url = str(row.iloc[4]) if len(row) > 4 else ""
-            
+            # 列名で安全に取得。存在しない場合はインデックスをフォールバックに。
+            if '回答者名' in df.columns:
+                respondent = str(row['回答者名'])
+            else:
+                respondent = str(row.iloc[1]) if len(row) > 1 else "匿名"
+
+            if 'マイリストのURL' in df.columns:
+                mylist_url = str(row['マイリストのURL'])
+            else:
+                mylist_url = str(row.iloc[4]) if len(row) > 4 else ""
+
+            if 'マイリストに含める事ができない動画を選出する場合' in df.columns:
+                ext_text = str(row['マイリストに含める事ができない動画を選出する場合'])
+            else:
+                ext_text = str(row.iloc[5]) if len(row) > 5 else ""
+                
             if respondent == 'nan' or not respondent: respondent = f"匿名_{i+1}"
         except Exception:
             continue
@@ -174,7 +213,13 @@ def process_data(df):
         if respondent not in respondent_counts:
             respondent_counts[respondent] = 0
 
-        urls_to_process = [u.strip() for u in [mylist_url, ext_url] if u.strip() and str(u).lower() != 'nan']
+        # 文章中からURLをすべて抽出（万が一マイリスト欄に文章が書かれても対応できる）
+        urls_to_process = []
+        urls_to_process.extend(extract_urls_from_text(mylist_url))
+        urls_to_process.extend(extract_urls_from_text(ext_text))
+        
+        # URLの重複を排除
+        urls_to_process = list(dict.fromkeys(urls_to_process))
         
         for url in urls_to_process:
             if url in video_meta_cache:
